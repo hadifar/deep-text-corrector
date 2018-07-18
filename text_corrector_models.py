@@ -10,6 +10,7 @@ from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import embedding_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import nn_ops
+#from tensorflow.contrib import legacy_seq2seq as seq2seq
 
 import seq2seq
 from data_reader import PAD_ID, GO_ID
@@ -17,7 +18,6 @@ from data_reader import PAD_ID, GO_ID
 
 class TextCorrectorModel(object):
     """Sequence-to-sequence model used to correct grammatical errors in text.
-
     NOTE: mostly copied from TensorFlow's seq2seq_model.py; only modifications
     are:
      - the introduction of RMSProp as an optional optimization algorithm
@@ -31,7 +31,6 @@ class TextCorrectorModel(object):
                  num_samples=512, forward_only=False, config=None,
                  corrective_tokens_mask=None):
         """Create the model.
-
         Args:
           source_vocab_size: size of the source vocabulary.
           target_vocab_size: size of the target vocabulary.
@@ -88,7 +87,7 @@ class TextCorrectorModel(object):
                                                np.zeros(self.target_vocab_size),
                                                shape=[self.target_vocab_size],
                                                dtype=tf.float32)
-        batched_corrective_tokens = tf.pack(
+        batched_corrective_tokens = tf.stack(
             [corrective_tokens_tensor] * self.batch_size)
         self.batch_corrective_tokens_mask = batch_corrective_tokens_mask = \
             tf.placeholder(
@@ -111,25 +110,24 @@ class TextCorrectorModel(object):
 
             output_projection = (w, b)
 
-            def sampled_loss(inputs, labels):
+            def sampled_loss(labels, logits):
                 labels = tf.reshape(labels, [-1, 1])
-                return tf.nn.sampled_softmax_loss(w_t, b, inputs, labels,
+                return tf.nn.sampled_softmax_loss(w_t, b, labels, logits,
                                                   num_samples,
                                                   self.target_vocab_size)
             softmax_loss_function = sampled_loss
 
         # Create the internal multi-layer cell for our RNN.
-        single_cell = tf.nn.rnn_cell.GRUCell(size)
+        single_cell = tf.contrib.rnn.GRUCell(size)
         if use_lstm:
-            single_cell = tf.nn.rnn_cell.BasicLSTMCell(size)
+            single_cell = tf.contrib.rnn.BasicLSTMCell(size)
         cell = single_cell
         if num_layers > 1:
-            cell = tf.nn.rnn_cell.MultiRNNCell([single_cell] * num_layers)
+            cell = tf.contrib.rnn.MultiRNNCell([single_cell] * num_layers)
 
         # The seq2seq function: we use embedding for the input and attention.
         def seq2seq_f(encoder_inputs, decoder_inputs, do_decode):
             """
-
             :param encoder_inputs: list of length equal to the input bucket
             length of 1-D tensors (of length equal to the batch size) whose
             elements consist of the token index of each sample in the batch
@@ -154,8 +152,7 @@ class TextCorrectorModel(object):
                     embedding_size=size,
                     output_projection=output_projection,
                     feed_previous=do_decode,
-                    loop_fn_factory=
-                    apply_input_bias_and_extract_argmax_fn_factory(input_bias))
+                    loop_fn_factory=apply_input_bias_and_extract_argmax_fn_factory(input_bias))
             else:
                 return seq2seq.embedding_attention_seq2seq(
                     encoder_inputs, decoder_inputs, cell,
@@ -167,7 +164,7 @@ class TextCorrectorModel(object):
 
         # Training outputs and losses.
         if forward_only:
-            self.outputs, self.losses = tf.nn.seq2seq.model_with_buckets(
+            self.outputs, self.losses = seq2seq.model_with_buckets(
                 self.encoder_inputs, self.decoder_inputs, targets,
                 self.target_weights, buckets,
                 lambda x, y: seq2seq_f(x, y, True),
@@ -185,7 +182,7 @@ class TextCorrectorModel(object):
                                                      input_bias)
                         for output in self.outputs[b]]
         else:
-            self.outputs, self.losses = tf.nn.seq2seq.model_with_buckets(
+            self.outputs, self.losses = seq2seq.model_with_buckets(
                 self.encoder_inputs, self.decoder_inputs, targets,
                 self.target_weights, buckets,
                 lambda x, y: seq2seq_f(x, y, False),
@@ -212,7 +209,7 @@ class TextCorrectorModel(object):
         self.saver = tf.train.Saver(tf.all_variables())
 
     def build_input_bias(self, encoder_inputs, batch_corrective_tokens_mask):
-        packed_one_hot_inputs = tf.one_hot(indices=tf.pack(
+        packed_one_hot_inputs = tf.one_hot(indices=tf.stack(
             encoder_inputs, axis=1), depth=self.target_vocab_size)
         return tf.maximum(batch_corrective_tokens_mask,
                           tf.reduce_max(packed_one_hot_inputs,
@@ -221,7 +218,6 @@ class TextCorrectorModel(object):
     def step(self, session, encoder_inputs, decoder_inputs, target_weights,
              bucket_id, forward_only, corrective_tokens=None):
         """Run a step of the model feeding the given inputs.
-
         Args:
           session: tensorflow session to use.
           encoder_inputs: list of numpy int vectors to feed as encoder inputs.
@@ -229,11 +225,9 @@ class TextCorrectorModel(object):
           target_weights: list of numpy float vectors to feed as target weights.
           bucket_id: which bucket of the model to use.
           forward_only: whether to do the backward step or only forward.
-
         Returns:
           A triple consisting of gradient norm (or None if we did not do
           backward), average perplexity, and the outputs.
-
         Raises:
           ValueError: if length of encoder_inputs, decoder_inputs, or
             target_weights disagrees with bucket size for the specified
@@ -297,18 +291,15 @@ class TextCorrectorModel(object):
     def get_batch(self, data, bucket_id):
         """Get a random batch of data from the specified bucket, prepare for
         step.
-
         To feed data in step(..) it must be a list of batch-major vectors, while
         data here contains single length-major cases. So the main logic of this
         function is to re-index data cases to be in the proper format for
         feeding.
-
         Args:
           data: a tuple of size len(self.buckets) in which each element contains
             lists of pairs of input and output data that we use to create a
             batch.
           bucket_id: integer, which bucket to get the batch for.
-
         Returns:
           The triple (encoder_inputs, decoder_inputs, target_weights) for
           the constructed batch that has the proper format to call step(...)
@@ -374,12 +365,11 @@ def project_and_apply_input_bias(logits, output_projection, input_bias):
     # Apply input bias, which is a mask of shape [batch, vocab len]
     # where each token from the input in addition to all "corrective"
     # tokens are set to 1.0.
-    return tf.mul(probs, input_bias)
+    return tf.multiply(probs, input_bias)
 
 
 def apply_input_bias_and_extract_argmax_fn_factory(input_bias):
     """
-
     :param encoder_inputs: list of length equal to the input bucket
     length of 1-D tensors (of length equal to the batch size) whose
     elements consist of the token index of each sample in the batch
@@ -389,14 +379,12 @@ def apply_input_bias_and_extract_argmax_fn_factory(input_bias):
 
     def fn_factory(embedding, output_projection=None, update_embedding=True):
         """Get a loop_function that extracts the previous symbol and embeds it.
-
         Args:
           embedding: embedding tensor for symbols.
           output_projection: None or a pair (W, B). If provided, each fed previous
             output will first be multiplied by W and added B.
           update_embedding: Boolean; if False, the gradients will not propagate
             through the embeddings.
-
         Returns:
           A loop function.
         """
@@ -414,4 +402,3 @@ def apply_input_bias_and_extract_argmax_fn_factory(input_bias):
         return loop_function
 
     return fn_factory
-

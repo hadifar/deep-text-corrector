@@ -4,4 +4,6 @@
 *.swp
 .DS_Store
 *.zip
-upload_lambda_s3.sh
+/movie_dialog_model
+/venv
+/env
